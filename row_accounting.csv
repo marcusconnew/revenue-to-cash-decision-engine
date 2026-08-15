@@ -1,0 +1,8 @@
+table,rows_in,duplicates_removed,rows_rejected,rows_clean,reconciles
+commitments,1438,0,53,1385,True
+invoices,6020,46,135,5839,True
+receipts,6210,38,71,6101,True
+deliveries,5892,0,69,5823,True
+collections_snapshots,5848,0,0,5848,True
+customers,46,0,0,46,True
+monthly_financials,82,0,0,82,True

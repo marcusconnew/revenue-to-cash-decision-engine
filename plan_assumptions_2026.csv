@@ -1,0 +1,7 @@
+item,basis,monthly_amount,months,annual_total
+Finance lease,Fact — observed every month of every year,159772.95,"1,2,3,4,5,6,7,8,9,10,11,12",1917275.4
+Quarterly loan repayment,Fact — observed Mar/Jun/Sep/Dec throughout,335411.55,"3,6,9,12",1341646.21
+Corporate tax,Fact — recurring each September since 2024,284605.81,9,284605.81
+Founder distribution,Assumption — discretionary; set at the 2021-24 median. Management may defer or cancel.,1127219.91,5,1127219.91
+2025 relocation programme,"Assumption — treated as NON-RECURRING and excluded. Observed Feb-Oct 2025 only. If it continues, add to the plan.",0.0,none,0.0
+"2025 programme, for reference",Excluded from plan,379446.11,2-10,3415014.96

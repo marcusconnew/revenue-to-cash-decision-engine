@@ -1,0 +1,2 @@
+baseline_mean_mae,xgboost_mean_mae,mean_mae_improvement,gate_1_improvement_10pc,splits_won,gate_2_wins_2_of_3,worst_split_degradation,gate_3_no_split_5pc_worse,xgboost_adopted,selected_model
+11.103930313560427,10.357749073181708,0.0671997409302418,False,3,True,-0.0513391102119045,True,False,Baseline

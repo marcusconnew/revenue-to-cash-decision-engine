@@ -1,0 +1,25 @@
+table,defect,action,rows_affected
+collections_snapshots,Mixed date formats,Parsed and standardised to ISO date,1965
+commitments,Blank and invalid values,Replaced with null; rows missing a required field rejected,40
+commitments,Currency symbols and separators in numeric fields,Coerced to numeric,414
+commitments,Future-dated records,Excluded as a leakage control,6
+commitments,Inconsistent labels,Mapped to canonical values via configuration,2291
+commitments,Mixed date formats,Parsed and standardised to ISO date,451
+customers,Inconsistent labels,Mapped to canonical values via configuration,40
+deliveries,Blank and invalid values,Replaced with null; rows missing a required field rejected,62
+deliveries,Currency symbols and separators in numeric fields,Coerced to numeric,1614
+deliveries,Mixed date formats,Parsed and standardised to ISO date,1993
+invoices,Blank and invalid values,Replaced with null; rows missing a required field rejected,106
+invoices,Currency symbols and separators in numeric fields,Coerced to numeric,1680
+invoices,Duplicate rows on primary key,"Deduplicated, first occurrence retained",46
+invoices,Future-dated records,Excluded as a leakage control,7
+invoices,Mixed date formats,Parsed and standardised to ISO date,7964
+invoices,Right-censored invoices,"Excluded from the training sample and disclosed, not silently dropped",286
+monthly_financials,Blank and invalid values,Replaced with null; rows missing a required field rejected,1
+monthly_financials,Currency symbols and separators in numeric fields,Coerced to numeric,70
+monthly_financials,Missing months,Reported as gaps; never interpolated in the cleaned layer,2
+receipts,Blank and invalid values,Replaced with null; rows missing a required field rejected,57
+receipts,Currency symbols and separators in numeric fields,Coerced to numeric,1688
+receipts,Duplicate rows on primary key,"Deduplicated, first occurrence retained",38
+receipts,Mixed date formats,Parsed and standardised to ISO date,2102
+receipts,Unapplied receipts,Excluded from invoice matching; retained for cash totals,34

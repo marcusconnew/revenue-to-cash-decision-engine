@@ -1,280 +1,338 @@
 """
-Week 6 Capstone — B2B Revenue-to-Cash Early Warning and Decision Engine
-Phase 1: minimal Streamlit deployment proof.
+B2B Revenue-to-Cash Early Warning and Decision Engine — deployed application.
 
-Purpose (charter v1.0.1, §10 Phase 1, acceptance test T5.1):
-confirm that the repository, the pinned dependency set and Streamlit
-Community Cloud all cooperate before any pipeline work begins.
+Charter deliverable 5, §6. Decision-first: the answer is at the top, controls
+sit below it. Acceptance tests T5.1–T5.3.
 
-Every number on this page is dummy data. No model, no pipeline, no
-synthetic data pack exists yet. The §6 page structure is stubbed only so
-that Phase 6 extends this file rather than replacing it.
-
-All smoke checks are wrapped so that a dependency failure is *reported*
-rather than crashing the app — a crashed app would fail T5.1 without
-telling us which dependency caused it.
+Reads a decision pack exported by the pipeline. The app recomputes the cash
+roll-forward live so the sliders move numbers, narrative and actions together
+(T5.2), but it never refits a model — model selection is frozen in Phase 4.
 """
 
 from __future__ import annotations
 
-import importlib.metadata as metadata
-import platform
-import sys
-import warnings
-from datetime import datetime
+import json
+from pathlib import Path
 
-import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
-APP_VERSION = "phase1-0.1.0"
-CHARTER_VERSION = "v1.0.1 (frozen 7 August 2026)"
+HERE = Path(__file__).parent
+CHARTER = "v1.0.1 (frozen 7 August 2026)"
 
-REQUIRED_PACKAGES = [
-    "streamlit",
-    "pandas",
-    "numpy",
-    "statsmodels",
-    "scikit-learn",
-    "xgboost",
-    "plotly",
-    "openpyxl",
-]
+st.set_page_config(page_title="Revenue-to-Cash Decision Engine",
+                   page_icon="•", layout="wide")
 
-st.set_page_config(
-    page_title="Revenue-to-Cash Decision Engine — deployment proof",
-    page_icon="•",
-    layout="wide",
-)
-
-
-# ---------------------------------------------------------------------------
-# Dummy data (Phase 1 only — replaced by the §4 synthetic pack in Phase 3)
-# ---------------------------------------------------------------------------
 
 @st.cache_data
-def dummy_revenue_history() -> pd.Series:
-    """84 months of plausible-looking dummy revenue, Jan 2019 – Dec 2025.
+def load_pack() -> dict:
+    return json.loads((HERE / "decision_pack.json").read_text())
 
-    Deliberately simple and deterministic. This is not the synthetic
-    data-generating process; that is defined in Phase 3 to the §4 contract.
+
+@st.cache_data
+def load_csv(name: str) -> pd.DataFrame:
+    return pd.read_csv(HERE / f"{name}.csv")
+
+
+PACK = load_pack()
+MONTHS = list(PACK["forecast_revenue"])          # Jan-Dec 2026, the reporting window
+HORIZON = PACK["horizon"]                        # Jan 2026 - Dec 2027, the arithmetic window
+
+
+def shift_receipts(base: dict, extra_days: float) -> pd.Series:
+    """Move receipts by `extra_days`, splitting across month boundaries.
+
+    Boundary handling is deliberately asymmetric, because the two ends mean
+    different things:
+
+      RIGHT  cash pushed past the end of the arithmetic horizon (December
+             2027) is dropped -- it arrives in 2028, beyond anything the
+             scenario needs to represent. Cash landing in 2027 is retained by
+             the horizon and simply falls outside the 2026 reporting window
+             when the projection is cropped.
+      LEFT   cash pulled before January 2026 is FLOORED into January, never
+             discarded. Opening AR is known outstanding at 31 December 2025,
+             so no scenario can make it collect earlier than the forecast
+             start; and 2026 revenue cannot be collected before it is earned.
+
+    An earlier version discarded both ends. A -15 day collection scenario
+    therefore destroyed AED 1.75m of the AED 6.69m opening-AR book, making the
+    optimistic case look worse than the base case for a reason with no
+    financial meaning.
+
+    Shifts run across the FULL Jan-2026 to Dec-2027 horizon, then the cash
+    projection is cropped to 2026. Shifting an already-cropped 2026 schedule
+    was the second half of the same defect: AED 9.46m of 2026 revenue collects
+    in 2027, and a faster-collection scenario must be able to pull part of that
+    tail back into December rather than being told 2026 receipts are fixed.
     """
-    rng = np.random.default_rng(20260807)
-    index = pd.date_range("2019-01-01", "2025-12-01", freq="MS")
-    trend = np.linspace(1_800_000, 2_950_000, len(index))
-    seasonal = 180_000 * np.sin(np.arange(len(index)) * 2 * np.pi / 12)
-    noise = rng.normal(0, 70_000, len(index))
-    return pd.Series((trend + seasonal + noise).round(0), index=index, name="dummy_revenue")
+    values = pd.Series(base, dtype=float)
+    if extra_days == 0:
+        return values
+    whole, fraction = divmod(extra_days / 30.4375, 1.0)
+    whole = int(whole)
+    out = pd.Series(0.0, index=values.index)
+    last = len(out) - 1
+    for i, amount in enumerate(values):
+        for target, share in ((i + whole, 1 - fraction), (i + whole + 1, fraction)):
+            if share == 0:
+                continue
+            if target < 0:
+                out.iloc[0] += amount * share          # floored at forecast start
+            elif target <= last:
+                out.iloc[target] += amount * share
+            # target > last: beyond December 2027, i.e. 2028 or later, which is
+            # further out than any scenario needs to represent
+    return out
+
+
+def project(revenue_change: float, collection_delay: float, billing_delay: float,
+            cost_change: float, buffer: float, ar_case: str,
+            distribution: bool, relocation: bool) -> pd.DataFrame:
+    receipts_key = ("ar_base_ext" if ar_case == "Base — stale AR excluded"
+                    else "ar_upside_ext")
+
+    # Segment-wise receipt projection computed by the pipeline over the extended
+    # horizon, scaled for the revenue lever and shifted for the timing levers.
+    # Reconstructing the lag here with an approximate constant made the app
+    # disagree with the analysis it is supposed to present.
+    new_business = shift_receipts(
+        {m: v * (1 + revenue_change) for m, v in PACK["new_business_receipts_ext"].items()},
+        billing_delay + collection_delay)
+    ar = shift_receipts(PACK[receipts_key], collection_delay)
+
+    # Crop to the 2026 reporting window only after the arithmetic is done.
+    new_business = new_business.iloc[:len(MONTHS)]
+    ar = ar.iloc[:len(MONTHS)]
+
+    costs = pd.Series(PACK["operating_costs"], dtype=float) * (1 + cost_change)
+    committed = pd.Series(PACK["committed"], dtype=float).copy()
+    if not distribution:
+        committed.iloc[4] = max(committed.iloc[4] - 1_127_219.91, 0.0)
+    if relocation:
+        for i in range(1, 10):
+            committed.iloc[i] += 379_446.11
+
+    frame = pd.DataFrame({"receipts": new_business.to_numpy() + ar.to_numpy(),
+                          "operating_costs": costs.to_numpy(),
+                          "committed_payments": committed.to_numpy()}, index=MONTHS)
+    frame["net"] = frame["receipts"] - frame["operating_costs"] - frame["committed_payments"]
+    frame["opening_cash"] = PACK["opening_cash"] + frame["net"].cumsum().shift(1).fillna(0.0)
+    frame["closing_cash"] = frame["opening_cash"] + frame["net"]
+    frame["shortfall"] = (buffer - frame["closing_cash"]).clip(lower=0.0)
+    return frame
+
+
+def aed(value: float) -> str:
+    return f"AED {value:,.0f}"
 
 
 # ---------------------------------------------------------------------------
-# Environment and dependency checks
-# ---------------------------------------------------------------------------
-
-def environment_report() -> pd.DataFrame:
-    rows = []
-    for package in REQUIRED_PACKAGES:
-        try:
-            rows.append({"Package": package, "Version": metadata.version(package), "Status": "OK"})
-        except Exception as exc:  # noqa: BLE001 — report, never crash
-            rows.append({"Package": package, "Version": "—", "Status": f"NOT FOUND ({exc.__class__.__name__})"})
-    return pd.DataFrame(rows)
-
-
-def check_holt_winters(series: pd.Series) -> dict:
-    """Fit is the point, not the import. Holt-Winters at seasonal period 12."""
-    try:
-        from statsmodels.tsa.holtwinters import ExponentialSmoothing
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            fit = ExponentialSmoothing(
-                series.astype(float),
-                trend="add",
-                seasonal="add",
-                seasonal_periods=12,
-                initialization_method="estimated",
-            ).fit()
-            forecast = fit.forecast(12)
-        return {
-            "check": "statsmodels — Holt-Winters fit and 12-month forecast",
-            "status": "PASS",
-            "detail": f"12 points returned, first = {forecast.iloc[0]:,.0f}",
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {"check": "statsmodels — Holt-Winters", "status": "FAIL", "detail": f"{exc.__class__.__name__}: {exc}"}
-
-
-def check_xgboost() -> dict:
-    """XGBoost is the dependency most likely to fail on a slim container."""
-    try:
-        import xgboost as xgb
-        from sklearn.metrics import mean_absolute_error
-
-        rng = np.random.default_rng(7)
-        x = rng.normal(size=(240, 4))
-        y = 45 + 6 * x[:, 0] - 3 * x[:, 1] + rng.normal(0, 2, 240)
-        model = xgb.XGBRegressor(n_estimators=40, max_depth=3, learning_rate=0.15, verbosity=0)
-        model.fit(x[:200], y[:200])
-        mae = mean_absolute_error(y[200:], model.predict(x[200:]))
-        return {
-            "check": "xgboost — regressor fit and predict",
-            "status": "PASS",
-            "detail": f"holdout MAE {mae:.2f} on dummy features",
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {"check": "xgboost", "status": "FAIL", "detail": f"{exc.__class__.__name__}: {exc}"}
-
-
-def check_sarimax(series: pd.Series) -> dict:
-    """Heaviest fit in the planned stack — the resource-limit canary."""
-    try:
-        from statsmodels.tsa.statespace.sarimax import SARIMAX
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            fit = SARIMAX(
-                series.astype(float),
-                order=(1, 1, 1),
-                seasonal_order=(1, 1, 0, 12),
-                enforce_stationarity=False,
-                enforce_invertibility=False,
-            ).fit(disp=False)
-            forecast = fit.forecast(12)
-        return {
-            "check": "statsmodels — SARIMA fit and 12-month forecast",
-            "status": "PASS",
-            "detail": f"12 points returned, first = {forecast.iloc[0]:,.0f}",
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {"check": "statsmodels — SARIMA", "status": "FAIL", "detail": f"{exc.__class__.__name__}: {exc}"}
-
-
-def check_plotly() -> dict:
-    try:
-        import plotly.graph_objects as go
-
-        go.Figure(data=go.Scatter(x=[1, 2, 3], y=[1, 4, 9]))
-        return {"check": "plotly — figure construction", "status": "PASS", "detail": "figure built"}
-    except Exception as exc:  # noqa: BLE001
-        return {"check": "plotly", "status": "FAIL", "detail": f"{exc.__class__.__name__}: {exc}"}
-
-
-def check_openpyxl() -> dict:
-    try:
-        import io
-
-        buffer = io.BytesIO()
-        pd.DataFrame({"month": ["2025-01"], "actual_revenue": [1_000_000]}).to_excel(buffer, index=False)
-        round_trip = pd.read_excel(io.BytesIO(buffer.getvalue()))
-        return {
-            "check": "openpyxl — Excel write and read round trip",
-            "status": "PASS",
-            "detail": f"{len(round_trip)} row returned",
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {"check": "openpyxl", "status": "FAIL", "detail": f"{exc.__class__.__name__}: {exc}"}
-
-
-# ---------------------------------------------------------------------------
-# Page 1 — Decision (structure only; numbers are placeholders)
-# ---------------------------------------------------------------------------
-
-history = dummy_revenue_history()
-
-st.warning(
-    "**Phase 1 deployment proof — dummy data.** No pipeline, no model and no synthetic "
-    "data pack exist yet. Every figure below is a placeholder proving layout and "
-    "dependency availability only.",
-    icon="⚠",
-)
 
 st.title("B2B Revenue-to-Cash Early Warning and Decision Engine")
-st.caption(
-    f"Charter {CHARTER_VERSION} · app {APP_VERSION} · "
-    f"rendered {datetime.now().strftime('%d %B %Y %H:%M')}"
-)
+st.caption(f"Harbourline Technical Services LLC (synthetic) · charter {CHARTER} · "
+           "seasonal naïve revenue model · segment-median collection model")
 
-decision_tab, evidence_tab, confidence_tab, assurance_tab = st.tabs(
-    ["1 · Decision", "2 · Evidence", "3 · Confidence", "4 · Technical assurance"]
-)
+decision, evidence, confidence, assurance = st.tabs(
+    ["1 · Decision", "2 · Evidence", "3 · Confidence", "4 · Technical assurance"])
 
-with decision_tab:
-    st.subheader("Decision status: placeholder — no model has run")
-    st.markdown(
-        "**Recommendation.** Placeholder text. In the completed build this sentence is "
-        "produced by Agent C and states what management should approve, reject or investigate."
-    )
+with st.sidebar:
+    st.markdown("### Scenario controls")
+    preset = st.radio("Preset", ["Base", "Upside", "Downside"], horizontal=True)
+    defaults = {"Base": (0.0, 0, 0.0), "Upside": (0.05, -15, -0.02),
+                "Downside": (-0.05, 30, 0.05)}[preset]
+
+    revenue_change = st.slider("Revenue growth", -0.20, 0.20, defaults[0], 0.01,
+                               format="%+.0f%%")
+    collection_delay = st.slider("Collection delay (days)", -30, 90, defaults[1], 5)
+    billing_delay = st.slider("Billing latency change (days)", -15, 60, 0, 5)
+    cost_change = st.slider("Operating cost change *(assumption)*", -0.10, 0.20,
+                            defaults[2], 0.01, format="%+.0f%%",
+                            help="Baseline AED 32.42m is the 2025 profile carried forward. "
+                                 "No approved 2026 budget exists. +5% adds AED 0.71m to the "
+                                 "funding requirement.")
+    buffer = st.slider("Minimum cash buffer (AED m)", 1.0, 6.0,
+                       PACK["buffer"] / 1e6, 0.25) * 1e6
+
+    st.markdown("### Plan assumptions")
+    st.caption("**These are assumptions, not approved plan.** The base case clears the "
+               "buffer by so little that each one can change the decision.")
+    distribution = st.checkbox("Founder distribution taken *(assumption)*", value=True,
+                               help="Discretionary. Set at the 2021–24 median, AED 1.13m. "
+                                    "Deferring it removes the base shortfall.")
+    relocation = st.checkbox("Relocation programme repeats *(assumption)*", value=False,
+                             help="Observed Feb–Oct 2025 only, AED 3.42m. Treated as "
+                                  "non-recurring. If it repeats, funding rises to AED 2.02m.")
+    ar_case = st.radio("Opening AR treatment",
+                       ["Base — stale AR excluded", "Upside — validated recovery"],
+                       help="The upside assumes stale balances are validated as collectable. "
+                            "It improves the economics; it does not improve the evidence, so "
+                            "the decision status is unchanged.")
+
+frame = project(revenue_change, collection_delay, billing_delay, cost_change,
+                buffer, ar_case, distribution, relocation)
+funding = float(frame["shortfall"].max())
+lowest = float(frame["closing_cash"].min())
+lowest_month = frame["closing_cash"].idxmin()
+months_below = int((frame["closing_cash"] < buffer).sum())
+
+# Decision status is governed by EVIDENCE QUALITY, not by scenario economics.
+# While the opening-AR integrity gate is unresolved, no combination of sliders
+# may promote the status to an approval. Improving the modelled outcome does
+# not improve what we know.
+GATE_UNRESOLVED = PACK["gate"]["status"] != "RECONCILED"
+DECISION_STATUS = ("Further validation required" if GATE_UNRESOLVED
+                   else "Use for planning")
+
+with decision:
+    st.subheader(f"Decision status: {DECISION_STATUS}")
+    if funding <= 0:
+        headline = (f"On these assumptions the plan holds the {aed(buffer)} buffer in every "
+                    f"month of 2026, with {aed(lowest - buffer)} of headroom at its tightest "
+                    f"({lowest_month}).")
+    elif funding < 500_000:
+        headline = (f"The plan **breaches the {aed(buffer)} buffer by {aed(funding)} in "
+                    f"{lowest_month}** — it sits on the limit rather than above it, and small "
+                    "changes in costs or collection timing move it materially.")
+    else:
+        headline = (f"Management should secure **{aed(funding)}** of liquidity headroom "
+                    f"to protect the buffer, tightest in {lowest_month}.")
+    st.markdown(f"**Recommendation.** {headline} "
+                f"{aed(PACK['gate']['unreconciled_exposure'])} of cash-application exposure "
+                "remains unreconciled, so opening receivables require validation before "
+                "any collection of stale balances is relied upon.")
 
     a, b, c, d = st.columns(4)
-    a.metric("Expected 2026 revenue", "AED 0", help="Placeholder")
-    b.metric("Expected closing cash", "AED 0", help="Placeholder")
-    c.metric("Lowest cash month", "—", help="Placeholder")
-    d.metric("Funding requirement", "AED 0", help="Placeholder")
+    a.metric("2026 revenue", aed(sum(PACK["forecast_revenue"].values()) * (1 + revenue_change)))
+    b.metric("Closing cash, Dec", aed(frame["closing_cash"].iloc[-1]))
+    c.metric("Lowest cash", aed(lowest), lowest_month)
+    d.metric("Funding requirement", aed(funding),
+             f"{months_below} month(s) below buffer",
+             delta_color="inverse" if funding else "off")
 
-    st.divider()
-    st.markdown("#### Scenario controls")
-    st.caption(
-        "Controls sit below the answer, per §6. Wiring is inert in Phase 1 — moving a "
-        "slider changes nothing, because there is nothing behind it yet."
-    )
-    s1, s2, s3 = st.columns(3)
-    s1.slider("Revenue growth (%)", -20, 20, 0, disabled=True)
-    s2.slider("Billing latency (days)", 0, 60, 15, disabled=True)
-    s3.slider("Collection delay (days)", 0, 90, 30, disabled=True)
-
-with evidence_tab:
-    st.subheader("Evidence — structure only")
-    st.caption("Dummy series, Jan 2019 – Dec 2025. Chart titles state conclusions in the completed build.")
-    st.line_chart(history)
-
-with confidence_tab:
-    st.subheader("Confidence and limitations — structure only")
-    st.markdown(
-        "- Decision-status labels by component — Phase 7\n"
-        "- Assumptions register — Phase 7\n"
-        "- Right-censoring disclosure (§4.6) — Phase 3 onward\n"
-        "- Known limitations — Phase 8"
-    )
-
-with assurance_tab:
-    st.subheader("Technical assurance")
-    st.markdown(
-        f"**Runtime.** Python {platform.python_version()} · {sys.platform}  \n"
-        "This tab is the actual Phase 1 test. Everything else on the page is scaffolding."
-    )
-
-    st.markdown("##### Installed dependency versions")
-    st.dataframe(environment_report(), hide_index=True, width="stretch")
-    st.caption(
-        "Once T5.1 passes, pin these exact versions in requirements.txt — that pinned set "
-        "becomes the reproducibility baseline supporting T3.6."
-    )
-
-    st.markdown("##### Dependency smoke checks")
-    st.caption("Imports are not enough. These fit the models the charter actually specifies.")
-
-    if st.button("Run smoke checks", type="primary"):
-        with st.spinner("Fitting Holt-Winters, XGBoost, SARIMA…"):
-            results = [
-                check_holt_winters(history),
-                check_xgboost(),
-                check_sarimax(history),
-                check_plotly(),
-                check_openpyxl(),
-            ]
-        frame = pd.DataFrame(results).rename(
-            columns={"check": "Check", "status": "Status", "detail": "Detail"}
-        )
-        st.dataframe(frame, hide_index=True, width="stretch")
-
-        failures = frame[frame["Status"] == "FAIL"]
-        if failures.empty:
-            st.success("All checks passed. T5.1 satisfied once this page is reachable at a live URL.")
-        else:
-            st.error(
-                f"{len(failures)} check(s) failed. Record as a technical blocker before "
-                "proceeding to Phase 3."
-            )
+    figure = go.Figure()
+    figure.add_bar(x=MONTHS, y=frame["closing_cash"], name="Closing cash",
+                   marker_color=["#c0392b" if v < buffer else "#2c7873"
+                                 for v in frame["closing_cash"]])
+    figure.add_hline(y=buffer, line_dash="dash", line_color="#c0392b",
+                     annotation_text=f"Minimum buffer {aed(buffer)}")
+    if months_below == 0:
+        chart_title = (f"Plan stays above the {aed(buffer)} buffer — minimum headroom "
+                       f"{aed(lowest - buffer)} in {lowest_month}")
     else:
-        st.info("Checks run on demand to keep first paint fast on Community Cloud.")
+        chart_title = (f"Plan breaches the {aed(buffer)} buffer by {aed(funding)} in "
+                       f"{lowest_month} ({months_below} month(s) below)")
+    figure.update_layout(
+        title=chart_title,
+        height=330, margin=dict(t=44, b=8), showlegend=False, yaxis_title="AED")
+    st.plotly_chart(figure, width="stretch")
+
+    st.markdown("#### Three priority actions")
+    st.table(pd.DataFrame([
+        {"#": 1, "Action": "Confirm whether the relocation programme repeats and whether "
+                           "the founder distribution is taken",
+         "Financial effect": "Spans nil to AED 2.02m", "Owner": "CEO / Board",
+         "Deadline": "Before plan approval"},
+        {"#": 2, "Action": "Reconcile cash application and aged receivables",
+         "Financial effect": f"{aed(PACK['gate']['unreconciled_exposure'])} unreconciled",
+         "Owner": "Finance Manager", "Deadline": "31 Jan 2026"},
+        {"#": 3, "Action": "Supply an approved 2026 operating-cost budget",
+         "Financial effect": "5% variance moves the requirement AED 0.71m",
+         "Owner": "CFO", "Deadline": "28 Feb 2026"},
+    ]).set_index("#"))
+
+    st.warning(
+        f"**The base number is not the finding — its fragility is.** At {aed(funding)} the plan "
+        "is effectively at the liquidity limit. A 30-day collection delay takes the requirement "
+        "to **AED 3.57m**; operating costs 10% above assumption take it to **AED 1.52m**; a "
+        f"repeat of the relocation programme takes it to **AED 2.02m**. {aed(PACK['gate']['unreconciled_exposure'])} "
+        "of receivables exposure is still unreconciled.\n\n*Figures in bold are **base-case reference "
+        "sensitivities**, each measured from default settings. They are not recalculated from "
+        "your current scenario — move one slider at a time to see its effect live.*", icon="⚠")
+
+    st.info("**Escalation triggers.** Collection delay beyond 30 days · operating costs "
+            "more than 5% above assumption · relocation programme confirmed · "
+            "cash-application reconciliation not complete by 31 January.")
+
+    with st.expander("Monthly projection for this scenario"):
+        table = frame[["receipts", "operating_costs", "committed_payments",
+                       "opening_cash", "closing_cash", "shortfall"]].round(0)
+        st.dataframe(table, width="stretch")
+        st.caption("Every figure on this page, including the recommendation and the four "
+                   "metrics above, derives from this single scenario result.")
+
+with evidence:
+    history = load_csv("history")
+    trend = go.Figure()
+    trend.add_scatter(x=history["month"], y=history["actual_revenue"], name="Actual",
+                      line=dict(color="#2c7873"))
+    trend.add_scatter(x=history["month"], y=history["budget_revenue"], name="Budget",
+                      line=dict(color="#999", dash="dot"))
+    trend.add_scatter(x=MONTHS,
+                      y=[v * (1 + revenue_change) for v in PACK["forecast_revenue"].values()],
+                      name="2026 forecast", line=dict(color="#c0392b", dash="dash"))
+    trend.update_layout(title="The 2026 forecast repeats 2025 — the selected model assumes no growth",
+                        height=340, margin=dict(t=44, b=8), yaxis_title="AED")
+    st.plotly_chart(trend, width="stretch")
+
+    st.markdown("##### Government-linked work is 31% of value but collects 98 days out")
+    st.dataframe(load_csv("segment_receipt_projection"), hide_index=True, width="stretch")
+
+    st.markdown("##### Two management choices move the answer more than trading does")
+    st.dataframe(load_csv("plan_assumption_sensitivity"), hide_index=True, width="stretch")
+
+with confidence:
+    gate = PACK["gate"]
+    st.error(f"**Opening AR integrity gate: {gate['status']}.** "
+             f"{aed(gate['unreconciled_exposure'])} of cash-application exposure — "
+             f"{gate['exposure_share_of_book']:.0%} of the apparent "
+             f"{aed(PACK['ar_book'])} receivables book.")
+    st.markdown(
+        f"The receipt ledger falls {aed(gate['reconciliation_exception'])} short of recorded "
+        f"cash, and {aed(gate['unapplied_cash'])} of cash cannot be matched to an invoice. "
+        "Some invoices shown as outstanding **may already have been paid**, in which case "
+        "that cash is already inside opening cash and must not be forecast again.\n\n"
+        f"Consequently {aed(PACK['stale_held_back'])} of stale balances is **held back from "
+        "the base case — not written off**, and remains collectable subject to validation.")
+
+    st.markdown("##### Decision status by component")
+    st.table(pd.DataFrame([
+        {"Component": "Revenue forecast", "Status": "Use with caution",
+         "Basis": "Seasonal naïve selected on frozen rules; SARIMA beat it on the 2025 holdout"},
+        {"Component": "Collection timing", "Status": "Use with caution",
+         "Basis": "Segment median; cannot predict an on-time payment, so aggregate use only"},
+        {"Component": "Opening receivables", "Status": "Do not use unvalidated",
+         "Basis": "Integrity gate UNRECONCILED"},
+        {"Component": "Operating costs", "Status": "Assumption",
+         "Basis": "2025 profile carried forward; no approved 2026 budget"},
+        {"Component": "Cash roll-forward", "Status": "Reliable",
+         "Basis": "Arithmetic reconciles exactly; controls C5.1–C5.7 pass"},
+    ]).set_index("Component"))
+
+    st.markdown("##### Known limitations")
+    st.markdown(
+        "- The revenue model under-forecast the 2025 holdout by 9.21% and assumes no growth.\n"
+        "- 286 invoices are right-censored and excluded, biasing collection history toward "
+        "faster payers.\n"
+        "- The collection model predicts every invoice late; it is unsuitable for invoice-level "
+        "classification.\n"
+        "- Operating costs are an assumption, not an approved budget.")
+
+with assurance:
+    st.markdown("##### Model selection — both challengers lost to a pre-registered threshold")
+    st.dataframe(load_csv("revenue_selection_record"), hide_index=True, width="stretch")
+    st.dataframe(load_csv("invoice_selection_record"), hide_index=True, width="stretch")
+    st.caption("Thresholds fixed 7 August 2026, before any model ran, and not revisited.")
+
+    st.markdown("##### Backtests")
+    st.dataframe(load_csv("revenue_backtest"), hide_index=True, width="stretch")
+    st.dataframe(load_csv("invoice_bakeoff"), hide_index=True, width="stretch")
+
+    st.markdown("##### Leakage audit and data quality")
+    st.dataframe(load_csv("leakage_audit"), hide_index=True, width="stretch")
+    st.dataframe(load_csv("row_accounting"), hide_index=True, width="stretch")
+    st.dataframe(load_csv("data_quality_summary"), hide_index=True, width="stretch")
+
+    st.markdown("##### 2026 plan assumptions")
+    st.dataframe(load_csv("plan_assumptions_2026"), hide_index=True, width="stretch")

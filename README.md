@@ -1,79 +1,31 @@
-# B2B Revenue-to-Cash Early Warning and Decision Engine
+# Revenue-to-Cash Decision Engine — deployed application
 
-Week 6 Capstone, AI in Finance — Mastery level.
-Specification: `project_charter_v1.0.1_FROZEN.md`. The charter governs; this repo implements it.
+Charter deliverable 5, §6. Deploy `app.py` on Streamlit Community Cloud from
+this folder (Python 3.12, as pinned in Phase 1).
 
-**Current state: Phase 1 — deployment proof only.** No pipeline, no models, no synthetic data pack. Every figure in the app is a placeholder.
+The app reads `decision_pack.json` and the exported CSVs. It recomputes the cash
+roll-forward live so sliders move numbers, narrative and actions together, but
+it **never refits a model** — selection was frozen in Phase 4.
 
----
+Base settings reproduce the repository figures exactly: funding requirement
+AED 103,461, lowest cash AED 2.90m in May 2026.
 
-## What Phase 1 proves
+Regenerate the pack after any pipeline change, or the app will present stale
+numbers.
 
-Charter §10 Phase 1, acceptance test **T5.1 — deploys on Community Cloud, live URL loads.**
+## Acceptance
 
-The app does slightly more than load. The Technical assurance tab reports installed versions and, on demand, *fits* the models the charter specifies rather than merely importing them:
+**T5.2 — automated.** `python -m tests.test_app` — **7/7 pass**. Covers default parity to
+repository output, six reference sensitivities, combined multi-lever scenarios,
+reset-to-default parity, single-source-of-truth, the decision-status invariant, and
+timing-boundary conservation.
 
-| Check | Why it is here |
+**T5.1 and T5.3 — manual, require the deployed app.**
+
+| | Step |
 |---|---|
-| Holt-Winters fit and 12-month forecast | §5.1 challenger 1 |
-| SARIMA fit and 12-month forecast | §5.1 challenger 2 — heaviest fit, the resource-limit canary |
-| XGBoost fit and predict | §5.2 challenger; most likely dependency to fail on a slim container |
-| Plotly figure construction | §6 charting |
-| openpyxl Excel round trip | §4 messy source-file ingestion |
+| T5.1 | Push this folder to the existing GitHub repo (replacing the Phase 1 shell), redeploy, confirm the live URL opens the real app — decision status and four metrics, not the dummy-data banner. |
+| T5.3 | At a normal laptop viewport, confirm status, recommendation and all four metrics are visible before scrolling. Screenshot as submission evidence. |
 
-A hello-world would pass T5.1 and leave the real risk — dependency resolution and memory headroom on Community Cloud — undiscovered until Phase 6. Every check is wrapped so a failure is reported on the page instead of crashing the app.
-
----
-
-## Runbook
-
-1. Create a **public** GitHub repository. Community Cloud can deploy private repos, but public removes an authorisation variable from a test whose only job is removing variables.
-2. Commit these five files at the repository root: `app.py`, `requirements.txt`, `packages.txt`, `README.md`, `.gitignore`. Only the first three are needed for the deployment itself; the README is retained as submission evidence. If your device will not save a leading-dot filename, upload the rest and create `.gitignore` in GitHub via **Add file → Create new file**.
-3. At share.streamlit.io, sign in with GitHub, then **Create app → Deploy a public app from GitHub**. Repository, branch `main`, main file path `app.py`. If **Advanced settings** offers a Python version, choose 3.11 or 3.12 — the newest release can run ahead of the statsmodels and XGBoost wheel builds, and a wheel-availability failure would misdiagnose as a stack problem.
-4. Watch the build log. First build takes several minutes — XGBoost and statsmodels wheels are large.
-5. When the app loads, open **4 · Technical assurance** and press **Run smoke checks**.
-
-**T5.1 passes when** the live URL loads and all five smoke checks report PASS.
-
-Record the live URL and the date. Screenshot the version table and the check results — that screenshot is evidence for deliverable 5 and for Loom 3:00–4:00.
-
----
-
-## After it passes
-
-Replace the floors in `requirements.txt` with the exact versions shown on the Technical assurance tab, commit, and redeploy. That pinned set is the reproducibility baseline behind **T3.6**.
-
-Versions tested locally on 8 August 2026:
-
-```
-streamlit 1.61.1   pandas 2.3.3     numpy 2.5.1
-statsmodels 0.14.6 scikit-learn 1.9.0  xgboost 3.4.0
-plotly 6.9.0       openpyxl 3.1.5
-```
-
-Community Cloud resolves against its own Python build, so its numbers may differ. Its numbers are the ones to pin.
-
----
-
-## If it fails
-
-Do not adjust scope. Record the failure and its cause; a genuine technical blocker is the only basis for a charter change, logged as v1.0.2.
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `libgomp.so.1: cannot open shared object file` | XGBoost needs OpenMP | Already handled by `packages.txt`. Confirm it is at the repo root and spelled exactly. |
-| Build times out or app restarts during smoke checks | Memory ceiling reached on the SARIMA fit | Genuine blocker. Options: shorten the fitted series, or drop SARIMA to import-only in the app and run it in the notebook. Charter §5.1 permits SARIMA "where justified" — a Community Cloud memory ceiling is a justification for excluding it, and must be recorded as such, not left silent. |
-| Dependency resolution fails | Version conflict between floors | Pin the locally tested set above and retry. |
-| App loads but tabs are blank | Streamlit version older than tab support | Raise the `streamlit` floor. |
-
----
-
-## Structure note
-
-The four tabs mirror charter §6 (Decision, Evidence, Confidence, Technical assurance) so that Phase 6 extends this file rather than replacing it. The decision sits above the scenario controls, which are present but disabled — there is nothing behind them yet, and an inert control that appears to work would be worse than one that plainly does not.
-
----
-
-## Not in this repo yet
-
-Phases 3–8: synthetic data pack (§4), pipeline class, model selection (§5), revenue-to-cash integration, agent challenge chain (§1.4). The §3.3 backlog stays a backlog.
+`decision_pack.json` must be regenerated after any pipeline change, or the app
+will present stale numbers.

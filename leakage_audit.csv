@@ -1,0 +1,7 @@
+check,result
+No feature drawn from the forbidden list,PASS
+Every snapshot dated on or before its prediction date,PASS
+No invoice dated after the observation cut-off,PASS
+No revenue month after the observation cut-off,PASS
+Evaluation sample respects the invoice maturity cut-off,PASS
+2025 holdout untouched by any imputation,PASS

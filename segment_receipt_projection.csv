@@ -1,0 +1,5 @@
+segment,value_share,payment_terms_days,median_lateness_days,total_lag_days,receipts_2026
+Enterprise,0.4738,45.0,7.0,52.0,15322909.78
+Government-linked,0.3111,68.1,30.0,98.1,8372998.13
+Mid-Market,0.1691,30.0,10.0,40.0,5720619.68
+SME,0.046,30.0,4.0,34.0,1589599.53
