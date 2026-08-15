@@ -150,14 +150,14 @@ with st.sidebar:
     cost_change = st.slider("Operating cost change *(assumption)*", -0.10, 0.20,
                             defaults[2], 0.01, format="%+.0f%%",
                             help="Baseline AED 32.42m is the 2025 profile carried forward. "
-                                 "No approved 2026 budget exists. +5% adds AED 0.71m to the "
-                                 "funding requirement.")
+                                 "No approved 2026 budget exists. +5% moves the funding "
+                                 "requirement to AED 0.81m.")
     buffer = st.slider("Minimum cash buffer (AED m)", 1.0, 6.0,
                        PACK["buffer"] / 1e6, 0.25) * 1e6
 
     st.markdown("### Plan assumptions")
-    st.caption("**These are assumptions, not approved plan.** The base case clears the "
-               "buffer by so little that each one can change the decision.")
+    st.caption("**These are assumptions, not approved plan.** The base case breaches the "
+               "buffer by only about AED 0.10m, so each one can change the decision.")
     distribution = st.checkbox("Founder distribution taken *(assumption)*", value=True,
                                help="Discretionary. Set at the 2021–24 median, AED 1.13m. "
                                     "Deferring it removes the base shortfall.")
@@ -206,7 +206,7 @@ with decision:
     a, b, c, d = st.columns(4)
     a.metric("2026 revenue", aed(sum(PACK["forecast_revenue"].values()) * (1 + revenue_change)))
     b.metric("Closing cash, Dec", aed(frame["closing_cash"].iloc[-1]))
-    c.metric("Lowest cash", aed(lowest), lowest_month)
+    c.metric("Lowest cash", aed(lowest), lowest_month, delta_color="off")
     d.metric("Funding requirement", aed(funding),
              f"{months_below} month(s) below buffer",
              delta_color="inverse" if funding else "off")
@@ -238,7 +238,7 @@ with decision:
          "Financial effect": f"{aed(PACK['gate']['unreconciled_exposure'])} unreconciled",
          "Owner": "Finance Manager", "Deadline": "31 Jan 2026"},
         {"#": 3, "Action": "Supply an approved 2026 operating-cost budget",
-         "Financial effect": "5% variance moves the requirement AED 0.71m",
+         "Financial effect": "5% cost increase moves requirement to AED 0.81m",
          "Owner": "CFO", "Deadline": "28 Feb 2026"},
     ]).set_index("#"))
 
@@ -312,7 +312,7 @@ with confidence:
 
     st.markdown("##### Known limitations")
     st.markdown(
-        "- The revenue model under-forecast the 2025 holdout by 9.21% and assumes no growth.\n"
+        "- The revenue model recorded 9.21% WAPE on the 2025 holdout; SARIMA performed better at 5.04%.\n"
         "- 286 invoices are right-censored and excluded, biasing collection history toward "
         "faster payers.\n"
         "- The collection model predicts every invoice late; it is unsuitable for invoice-level "
