@@ -3,11 +3,11 @@
 # versions reported on the Technical assurance tab. That pinned set is the
 # reproducibility baseline supporting acceptance test T3.6.
 
-streamlit>=1.36
-pandas>=2.2,<3
-numpy>=1.26
-statsmodels>=0.14
-scikit-learn>=1.5
-xgboost>=2.1
-plotly>=5.22
-openpyxl>=3.1
+streamlit==1.61.1
+pandas==2.3.3
+numpy==2.5.2
+statsmodels==0.14.6
+scikit-learn==1.9.0
+xgboost==3.4.1
+plotly==6.9.0
+openpyxl==3.1.5
