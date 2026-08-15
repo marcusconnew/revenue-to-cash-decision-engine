@@ -170,7 +170,7 @@ if "active_preset" not in st.session_state:
 with st.sidebar:
     st.markdown("### Scenario controls")
 
-    p1, p2, p3 = st.columns(3)
+    p1, p2, p3 = st.columns([0.75, 1.0, 1.25], gap="small")
     p1.button("Base", on_click=apply_preset, args=("Base",))
     p2.button("Upside", on_click=apply_preset, args=("Upside",))
     p3.button("Downside", on_click=apply_preset, args=("Downside",))
