@@ -137,23 +137,65 @@ st.caption(f"Harbourline Technical Services LLC (synthetic) · charter {CHARTER}
 decision, evidence, confidence, assurance = st.tabs(
     ["1 · Decision", "2 · Evidence", "3 · Confidence", "4 · Technical assurance"])
 
+# Presets are explicit Session State updates so switching back to Base genuinely
+# restores the scenario controls. Streamlit widgets otherwise preserve their
+# existing state across reruns, which can make a changed slider survive a preset switch.
+PRESETS = {
+    "Base": {"revenue_pct": 0, "collection_delay": 0, "billing_delay": 0,
+             "cost_pct": 0, "buffer_m": PACK["buffer"] / 1e6},
+    "Upside": {"revenue_pct": 5, "collection_delay": -15, "billing_delay": 0,
+               "cost_pct": -2, "buffer_m": PACK["buffer"] / 1e6},
+    "Downside": {"revenue_pct": -5, "collection_delay": 30, "billing_delay": 0,
+                 "cost_pct": 5, "buffer_m": PACK["buffer"] / 1e6},
+}
+
+
+def apply_preset(name: str) -> None:
+    for key, value in PRESETS[name].items():
+        st.session_state[key] = value
+    st.session_state["active_preset"] = name
+
+
+def mark_custom() -> None:
+    st.session_state["active_preset"] = "Custom"
+
+
+for _key, _value in PRESETS["Base"].items():
+    if _key not in st.session_state:
+        st.session_state[_key] = _value
+if "active_preset" not in st.session_state:
+    st.session_state["active_preset"] = "Base"
+
+
 with st.sidebar:
     st.markdown("### Scenario controls")
-    preset = st.radio("Preset", ["Base", "Upside", "Downside"], horizontal=True)
-    defaults = {"Base": (0.0, 0, 0.0), "Upside": (0.05, -15, -0.02),
-                "Downside": (-0.05, 30, 0.05)}[preset]
 
-    revenue_change = st.slider("Revenue growth", -0.20, 0.20, defaults[0], 0.01,
-                               format="%+.0f%%")
-    collection_delay = st.slider("Collection delay (days)", -30, 90, defaults[1], 5)
-    billing_delay = st.slider("Billing latency change (days)", -15, 60, 0, 5)
-    cost_change = st.slider("Operating cost change *(assumption)*", -0.10, 0.20,
-                            defaults[2], 0.01, format="%+.0f%%",
-                            help="Baseline AED 32.42m is the 2025 profile carried forward. "
-                                 "No approved 2026 budget exists. +5% moves the funding "
-                                 "requirement to AED 0.81m.")
-    buffer = st.slider("Minimum cash buffer (AED m)", 1.0, 6.0,
-                       PACK["buffer"] / 1e6, 0.25) * 1e6
+    p1, p2, p3 = st.columns(3)
+    p1.button("Base", on_click=apply_preset, args=("Base",))
+    p2.button("Upside", on_click=apply_preset, args=("Upside",))
+    p3.button("Downside", on_click=apply_preset, args=("Downside",))
+    st.caption(f"Active scenario: **{st.session_state['active_preset']}**")
+    st.caption("Preset buttons reset the scenario controls below. Plan assumptions remain separate.")
+
+    # Percentage sliders use whole percentage points for display (e.g. 5 = +5%),
+    # then convert back to decimals for the calculation.
+    revenue_pct = st.slider("Revenue growth", -20, 20, step=1, key="revenue_pct",
+                            format="%+d%%", on_change=mark_custom)
+    collection_delay = st.slider("Collection delay (days)", -30, 90, step=5,
+                                 key="collection_delay", on_change=mark_custom)
+    billing_delay = st.slider("Billing latency change (days)", -15, 60, step=5,
+                              key="billing_delay", on_change=mark_custom)
+    cost_pct = st.slider("Operating cost change *(assumption)*", -10, 20, step=1,
+                         key="cost_pct", format="%+d%%", on_change=mark_custom,
+                         help="Baseline AED 32.42m is the 2025 profile carried forward. "
+                              "No approved 2026 budget exists. +5% moves the funding "
+                              "requirement to AED 0.81m.")
+    buffer_m = st.slider("Minimum cash buffer (AED m)", 1.0, 6.0, step=0.25,
+                         key="buffer_m", on_change=mark_custom)
+
+    revenue_change = revenue_pct / 100.0
+    cost_change = cost_pct / 100.0
+    buffer = buffer_m * 1e6
 
     st.markdown("### Plan assumptions")
     st.caption("**These are assumptions, not approved plan.** The base case breaches the "
